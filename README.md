@@ -27,7 +27,10 @@ agent: trying to send the email itself (tier=send)
   -> [pending] send blocked: recorded as a pending approval request; nothing was sent
 ```
 
-The human side is three commands:
+The human side is three commands. `approve`/`deny` sign the decision with
+`SEND_GATE_APPROVER_KEY` (set it only in the approver's and executor's
+environment, never the agent's); approvals expire after 24h by default, and
+`python -m gate.send_gate --store S verify` checks the store's hash chain:
 
 ```
 $ python -m gate.send_gate --store demo_store.jsonl list
