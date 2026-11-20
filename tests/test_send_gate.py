@@ -22,6 +22,11 @@ def sent_box():
     return []
 
 
+@pytest.fixture(autouse=True)
+def approver_key(monkeypatch):
+    monkeypatch.setenv("SEND_GATE_APPROVER_KEY", "test-approver-secret")
+
+
 @pytest.fixture()
 def gate(tmp_path, sent_box):
     manifest_path = tmp_path / "permissions.json"
