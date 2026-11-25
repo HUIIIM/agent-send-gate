@@ -9,7 +9,7 @@ A permission-tier template that physically blocks every outbound send from your 
 <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green"/>
 <img alt="Python 3.10+" src="https://img.shields.io/badge/python-3.10%2B-blue"/>
 <img alt="Dependencies: none" src="https://img.shields.io/badge/dependencies-none-brightgreen"/>
-<img alt="Tests" src="https://img.shields.io/badge/tests-10%20passing-brightgreen"/>
+<img alt="Tests" src="https://img.shields.io/badge/tests-33%20passing-brightgreen"/>
 </p>
 
 ---
