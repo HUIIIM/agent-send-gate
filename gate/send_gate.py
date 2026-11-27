@@ -30,10 +30,16 @@ Fail-closed rules, everywhere:
   re-checked against the manifest at execution.
 - The store is hash-chained; truncation or rewrites fail closed.
 - Execution is serialized by an inter-process file lock.
+- An executor that raises is recorded, not propagated: an approved send
+  moves to the terminal state `failed` (the approval is spent; a retry
+  needs a new request and a new approval), and every failure is audited.
+- An audit write that fails never changes a decision, but it is never
+  silent either: it is logged at ERROR on the `send_gate` logger and
+  counted in `SendGate.audit_failures`.
 
 Every decision is appended to an audit log (JSON lines) that the gate
 never rewrites: executed, blocked_pending, approved, denied, sent,
-denied_unknown_tool, denied_replay, store_unavailable.
+failed, denied_unknown_tool, denied_replay, store_unavailable.
 
 This is a reference implementation: single process, JSON file store,
 standard library only. The security model is the point; swap the store
@@ -47,6 +53,7 @@ import fcntl
 import hashlib
 import hmac
 import json
+import logging
 import os
 import sys
 import time
@@ -61,6 +68,9 @@ TIERS = ("read", "draft", "send")
 KEY_ENV = "SEND_GATE_APPROVER_KEY"
 DEFAULT_APPROVAL_TTL = 24 * 60 * 60.0
 GENESIS = "0" * 64
+MAX_ERROR_CHARS = 500
+
+log = logging.getLogger("send_gate")
 
 
 class GateError(Exception):
@@ -73,7 +83,7 @@ class StoreIntegrityError(GateError):
 
 @dataclass
 class GateResult:
-    status: str  # executed | pending | denied
+    status: str  # executed | pending | denied | failed
     tool: str
     detail: str
     request_id: str | None = None
@@ -97,6 +107,11 @@ def sign_decision(key: bytes, request_id: str, args_sha256: str, decision: str, 
     """
     msg = "\n".join([request_id, args_sha256, decision, repr(float(at))]).encode("utf-8")
     return hmac.new(key, msg, hashlib.sha256).hexdigest()
+
+
+def _describe(exc: BaseException) -> str:
+    """Bounded one-line description of an executor error, for the log."""
+    return f"{type(exc).__name__}: {exc}"[:MAX_ERROR_CHARS]
 
 
 def approver_key() -> bytes | None:
@@ -214,7 +229,7 @@ class ApprovalStore:
         - tool/args/args_sha256 are pinned from the FIRST `pending` event for
           a request id; later events can never replace them.
         - Transitions are a state machine: pending -> approved|denied,
-          approved -> sent. Anything else is ignored (no resurrecting a
+          approved -> sent|failed. Anything else is ignored (no resurrecting a
           sent or denied request by re-appending an old event).
         - With `key`, approved/denied events whose HMAC is invalid do not
           transition; approvals counted in `bad_decisions`.
@@ -248,8 +263,8 @@ class ApprovalStore:
                     continue
                 state["last_event"] = typ
                 state["decision"] = event
-            elif typ == "sent" and last == "approved":
-                state["last_event"] = "sent"
+            elif typ in ("sent", "failed") and last == "approved":
+                state["last_event"] = typ
         return states
 
     def request_state(self, request_id: str, key: bytes | None = None) -> dict[str, Any] | None:
@@ -264,6 +279,7 @@ class SendGate:
     audit: ApprovalStore | None = None
     approval_ttl: float = DEFAULT_APPROVAL_TTL
     _clock: Callable[[], float] = field(default=time.time)
+    audit_failures: int = 0  # audit writes that failed; see _audit
 
     # -- construction -----------------------------------------------------
 
@@ -298,7 +314,12 @@ class SendGate:
             self._audit("denied_unknown_tool", tool=tool)
             return GateResult("denied", tool, f"tool {tool!r} is not declared in the manifest")
         if tier in ("read", "draft"):
-            value = self._execute(tool, kwargs)
+            try:
+                value = self._execute(tool, kwargs)
+            except Exception as exc:
+                error = _describe(exc)
+                self._audit("failed", tool=tool, tier=tier, error=error)
+                return GateResult("failed", tool, f"tier={tier} executor failed: {error}")
             self._audit("executed", tool=tool, tier=tier)
             return GateResult("executed", tool, f"tier={tier}", value=value)
         # tier == send: never execute here. Record and hand back a receipt.
@@ -412,7 +433,29 @@ class SendGate:
         if self._clock() - float(approval["at"]) > self.approval_ttl:
             self._audit("denied_expired", tool=tool, request_id=request_id)
             return GateResult("denied", tool, "approval expired")
-        value = self._execute(tool, args)
+        try:
+            value = self._execute(tool, args)
+        except Exception as exc:
+            # The approval is spent: it may have partly gone out, so it must
+            # never be replayed automatically. A retry is a new request.
+            error = _describe(exc)
+            try:
+                self.store.append({"type": "failed", "request_id": request_id, "at": self._clock(), "error": error})
+            except Exception as store_exc:
+                self._audit("failed", tool=tool, request_id=request_id, error=error, recorded=False)
+                return GateResult(
+                    "failed",
+                    tool,
+                    f"executor failed ({error}) and the failure could not be recorded: {store_exc}",
+                    request_id=request_id,
+                )
+            self._audit("failed", tool=tool, request_id=request_id, error=error)
+            return GateResult(
+                "failed",
+                tool,
+                f"executor failed: {error}; approval consumed, re-request to retry",
+                request_id=request_id,
+            )
         self.store.append({"type": "sent", "request_id": request_id, "at": self._clock()})
         self._audit("sent", tool=tool, request_id=request_id)
         return GateResult("executed", tool, "approved send executed", request_id=request_id, value=value)
@@ -447,8 +490,10 @@ class SendGate:
         sink = self.audit or self.store
         try:
             sink.append({"type": f"audit:{type_}", "at": self._clock(), **fields})
-        except Exception:
-            pass  # audit failure must never turn a refusal into an execution
+        except Exception as exc:
+            # Never let an audit failure change a decision, but never hide it.
+            self.audit_failures += 1
+            log.error("audit write failed for audit:%s (%s): %s", type_, fields, _describe(exc))
 
 
 def main(argv: list[str] | None = None) -> int:
