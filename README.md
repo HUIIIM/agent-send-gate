@@ -9,7 +9,7 @@ A permission-tier template that physically blocks every outbound send from your 
 <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green"/>
 <img alt="Python 3.10+" src="https://img.shields.io/badge/python-3.10%2B-blue"/>
 <img alt="Dependencies: none" src="https://img.shields.io/badge/dependencies-none-brightgreen"/>
-<img alt="Tests" src="https://img.shields.io/badge/tests-33%20passing-brightgreen"/>
+<img alt="Tests" src="https://img.shields.io/badge/tests-41%20passing-brightgreen"/>
 </p>
 
 ---
@@ -52,7 +52,7 @@ Approvals are single-use. Running the same execute again answers `[denied] alrea
 git clone https://github.com/HUIIIM/agent-send-gate
 cd agent-send-gate
 python examples/gmail/demo.py          # watch a send get blocked
-python -m pytest tests/ -q             # 10 tests, all of the gate's promises
+python -m pytest tests/ -q             # 41 tests, all of the gate's promises
 ```
 
 No dependencies. Python 3.10+, standard library only.
@@ -87,7 +87,8 @@ tests/test_send_gate.py               Every promise above, as an executable test
 - The agent calls tools only through the gate. `read` and `draft` pass through. `send` is converted into a pending approval request (tool, exact arguments, and a hash of them) appended to a JSON-lines store, and the agent receives a receipt instead of a result.
 - A human reviews the queue on a surface the agent cannot write to (this CLI, or your own UI over the same store), and appends an approval or a denial.
 - A separate executor step runs an approved request once. The arguments that execute are the arguments that were approved; the approval is consumed by executing.
-- Every step appends to an audit log the agent cannot rewrite: `blocked_pending`, `approved`, `denied`, `sent`, plus every refusal. If the store is unavailable or corrupt, sends stop. Refusal is the default in every failure mode.
+- Every step appends to an audit log the agent cannot rewrite: `blocked_pending`, `approved`, `denied`, `sent`, `failed`, plus every refusal. If the store is unavailable or corrupt, sends stop. Refusal is the default in every failure mode.
+- A tool that raises is recorded as `failed`, never retried: the approval is spent, and trying again takes a new request and a new approval. An audit write that fails never changes a decision, and it is logged at ERROR on the `send_gate` logger instead of being dropped.
 
 ## Limits
 
