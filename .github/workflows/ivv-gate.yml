@@ -1,0 +1,51 @@
+# IVV merge gate for this repository (SOTA VER-3; issue #7).
+# Sets commit status `ivv/verdict` on a PR's current head from the
+# independent verdict comments, using the fleet's own gate script
+# (HUIIIM/.github standards/ivv_gate.py) at a pinned commit.
+#
+# Safety: pull_request_target and issue_comment run THIS file from the
+# default branch, so a PR cannot rewrite its own gate. The PR's code is never
+# checked out or run; only the pinned .github commit is checked out, and the
+# job reads PR metadata/comments through the API and writes one status.
+#
+# To make it binding, add `ivv/verdict` to the required status checks of main
+# and pin its source to GitHub Actions (one admin setting).
+name: ivv-gate
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+  issue_comment:
+    types: [created, edited, deleted]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ivv-gate-${{ github.event.pull_request.number || github.event.issue.number }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    if: github.event_name == 'pull_request_target' || github.event.issue.pull_request
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+      statuses: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          repository: HUIIIM/.github
+          ref: f66a1e14bf3c2b103e2587584bdd652e45a3ba79  # .github main, 2026-11-28
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Set ivv/verdict on the PR head
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+        run: python3 standards/ivv_gate.py "$GITHUB_REPOSITORY" "$PR_NUMBER"
