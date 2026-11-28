@@ -1,7 +1,3 @@
-# DRAFT, NOT ENABLED. GitHub only runs files under .github/workflows/.
-# This file lives in .github/workflow-drafts/ on purpose; see README.md here
-# for the open permission gap and the enabling steps.
-#
 # Closes SEC-A5 (CI half: actions pinned to full commit SHA, dev dependencies
 # installed from a hash-locked file) and VER-1 (tests, lint, format and type
 # checks are blocking, not advisory). Clause IDs: HUIIIM/.github standards/SOTA.md.
