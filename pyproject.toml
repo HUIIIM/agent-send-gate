@@ -1,9 +1,15 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "agent-send-gate"
 version = "0.2.0"
 description = "A send-gate for agent-originated outbound messages"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
+readme = "README.md"
 dependencies = []  # runtime is standard library only
 
 [project.optional-dependencies]
@@ -12,6 +18,14 @@ dev = [
     "ruff==0.16.9",
     "mypy==2.4.1",
 ]
+
+[project.scripts]
+send-gate = "gate.send_gate:main"
+
+[tool.setuptools]
+# Flat layout holds two top-level dirs (gate, schema); only `gate` is the
+# package. Without this, setuptools refuses to build (F17 on #7).
+packages = ["gate"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
