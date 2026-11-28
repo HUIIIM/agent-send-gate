@@ -1,8 +1,8 @@
 """Runnable demo: an agent with Gmail-like tools behind the send gate.
 
     python examples/gmail/demo.py agent     # the agent works; its send is blocked
-    python -m gate.send_gate --store demo_store.jsonl list
-    python -m gate.send_gate --store demo_store.jsonl approve <id> --by you
+    python -m gate --store demo_store.jsonl list
+    python -m gate --store demo_store.jsonl approve <id> --by you
     python examples/gmail/demo.py execute <id>   # the approved send runs, once
 
 The "Gmail API" here is a fake that prints what it would do. Swap the
@@ -76,8 +76,8 @@ def agent_side() -> None:
     print(f"  -> approval request id: {result.request_id}")
     print()
     print("Nothing was sent. Review the queue and decide as a human:")
-    print(f"  python -m gate.send_gate --store {STORE.name} list")
-    print(f"  python -m gate.send_gate --store {STORE.name} approve {result.request_id} --by you")
+    print(f"  python -m gate --store {STORE.name} list")
+    print(f"  python -m gate --store {STORE.name} approve {result.request_id} --by you")
     print(f"  python examples/gmail/demo.py execute {result.request_id}")
 
 

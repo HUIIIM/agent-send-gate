@@ -9,7 +9,6 @@ A permission-tier template that physically blocks every outbound send from your 
 <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green"/>
 <img alt="Python 3.10+" src="https://img.shields.io/badge/python-3.10%2B-blue"/>
 <img alt="Dependencies: none" src="https://img.shields.io/badge/dependencies-none-brightgreen"/>
-<img alt="Tests" src="https://img.shields.io/badge/tests-41%20passing-brightgreen"/>
 </p>
 
 ---
@@ -30,16 +29,17 @@ agent: trying to send the email itself (tier=send)
 The human side is three commands. `approve`/`deny` sign the decision with
 `SEND_GATE_APPROVER_KEY` (set it only in the approver's and executor's
 environment, never the agent's); approvals expire after 24h by default, and
-`python -m gate.send_gate --store S verify` checks the store's hash chain:
+`python -m gate --store S verify` checks the store's hash chain (after
+`pip install .` the same CLI is also available as `send-gate`):
 
 ```
-$ python -m gate.send_gate --store demo_store.jsonl list
-f5a6849a7aa8  gmail.send_message  args={"body": "Hi, attaching invoice #1042 ...", "subject": "Invoice #1042", "to": "client@example.com"}
+$ python -m gate --store demo_store.jsonl list
+c8eb84e473b148849a9114a10de6a25f  gmail.send_message  args={"body": "Hi, attaching invoice #1042 as discussed.", "subject": "Invoice #1042", "to": "client@example.com"}
 
-$ python -m gate.send_gate --store demo_store.jsonl approve f5a6849a7aa8 --by you
-approved f5a6849a7aa8 by you
+$ python -m gate --store demo_store.jsonl approve c8eb84e473b148849a9114a10de6a25f --by you
+approved c8eb84e473b148849a9114a10de6a25f by you
 
-$ python examples/gmail/demo.py execute f5a6849a7aa8
+$ python examples/gmail/demo.py execute c8eb84e473b148849a9114a10de6a25f
 [executed] approved send executed
   -> SENT to client@example.com: 'Invoice #1042'
 ```
@@ -52,7 +52,7 @@ Approvals are single-use. Running the same execute again answers `[denied] alrea
 git clone https://github.com/HUIIIM/agent-send-gate
 cd agent-send-gate
 python examples/gmail/demo.py          # watch a send get blocked
-python -m pytest tests/ -q             # 41 tests, all of the gate's promises
+python -m pytest tests/ -q             # the full suite: every promise below is a test
 ```
 
 No dependencies. Python 3.10+, standard library only.
@@ -74,7 +74,7 @@ Two rules do most of the work:
 
 ```
 schema/tool-permissions.schema.json   JSON Schema for the manifest: declare every tool, once
-gate/send_gate.py                     The gate itself (reference implementation, ~250 lines)
+gate/send_gate.py                     The gate itself (reference implementation, one file, standard library only)
 examples/gmail/permissions.json       A mail toolset declared at honest tiers
 examples/gmail/demo.py                The runnable story above, with fake executors
 examples/gmail/README.md              How to wire this to a real MCP server
@@ -85,9 +85,9 @@ tests/test_send_gate.py               Every promise above, as an executable test
 ## How it works
 
 - The agent calls tools only through the gate. `read` and `draft` pass through. `send` is converted into a pending approval request (tool, exact arguments, and a hash of them) appended to a JSON-lines store, and the agent receives a receipt instead of a result.
-- A human reviews the queue on a surface the agent cannot write to (this CLI, or your own UI over the same store), and appends an approval or a denial.
+- A human reviews the queue on a surface the agent cannot write to (this CLI, or your own UI over the same store), and appends an approval or a denial. The CLI shows invisible, control and bidi-override characters as `\uXXXX` escapes, and the approver name is bound into the signed decision.
 - A separate executor step runs an approved request once. The arguments that execute are the arguments that were approved; the approval is consumed by executing.
-- Every step appends to an audit log the agent cannot rewrite: `blocked_pending`, `approved`, `denied`, `sent`, `failed`, plus every refusal. If the store is unavailable or corrupt, sends stop. Refusal is the default in every failure mode.
+- Every step appends to a hash-chained audit log (`verify` detects truncation or a rewritten line; a writer who can rewrite both the store and its head file consistently is not detected, so keep the store where the agent cannot write, and rely on the HMAC-signed approvals for authenticity): `blocked_pending`, `approved`, `denied`, `sent`, `failed`, plus every refusal. If the store is unavailable or corrupt, sends stop. Refusal is the default in every failure mode.
 - A tool that raises is recorded as `failed`, never retried: the approval is spent, and trying again takes a new request and a new approval. An audit write that fails never changes a decision, and it is logged at ERROR on the `send_gate` logger instead of being dropped.
 
 ## Limits

@@ -50,6 +50,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import getpass
 import hashlib
 import hmac
 import json
@@ -57,6 +58,7 @@ import logging
 import os
 import sys
 import time
+import unicodedata
 import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -69,6 +71,14 @@ KEY_ENV = "SEND_GATE_APPROVER_KEY"
 DEFAULT_APPROVAL_TTL = 24 * 60 * 60.0
 GENESIS = "0" * 64
 MAX_ERROR_CHARS = 500
+MAX_APPROVER_CHARS = 64
+MANIFEST_VERSION = 1
+MANIFEST_KEYS = {"version", "tools"}
+TOOL_KEYS = {"tier", "description", "rationale"}
+# Unicode categories a reviewer cannot see or that reorder text: control,
+# format (includes bidi overrides and zero-width), surrogate, private use,
+# unassigned, and line/paragraph separators.
+_HIDDEN_CATEGORIES = {"Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp"}
 
 log = logging.getLogger("send_gate")
 
@@ -94,19 +104,95 @@ def _sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def _canonical_json(args: Any) -> str:
+    return json.dumps(args, ensure_ascii=False, sort_keys=True, allow_nan=False)
+
+
 def args_digest(args: dict[str, Any]) -> str:
     """Canonical SHA-256 of a request's arguments."""
-    return _sha256(json.dumps(args, ensure_ascii=False, sort_keys=True, default=str))
+    return _sha256(_canonical_json(args))
 
 
-def sign_decision(key: bytes, request_id: str, args_sha256: str, decision: str, at: float) -> str:
-    """HMAC-SHA256 over (request_id, args_sha256, decision, at).
+def sign_decision(
+    key: bytes,
+    request_id: str,
+    args_sha256: str,
+    decision: str,
+    at: float,
+    by: str | None = None,
+    os_user: str | None = None,
+) -> str:
+    """HMAC-SHA256 over (request_id, args_sha256, decision, at[, by, os_user]).
 
     `at` is included so the approval time (which drives expiry) cannot be
-    altered without the key.
+    altered without the key; `by` and `os_user` so the recorded approver
+    cannot be rewritten after signing (F14). Without `by` this is the legacy
+    MAC, which the gate no longer accepts for new decisions.
     """
-    msg = "\n".join([request_id, args_sha256, decision, repr(float(at))]).encode("utf-8")
-    return hmac.new(key, msg, hashlib.sha256).hexdigest()
+    parts = [request_id, args_sha256, decision, repr(float(at))]
+    if by is not None:
+        parts += ["by=" + by, "os_user=" + (os_user or "")]
+    return hmac.new(key, "\n".join(parts).encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def reviewer_safe(text: str) -> str:
+    """Escape characters a human reviewer cannot see or that reorder text.
+
+    Bidi overrides, zero-width and control characters become visible
+    `\\uXXXX` escapes; everything else (including CJK) is left as is (F11).
+    """
+    return "".join(f"\\u{ord(ch):04x}" if unicodedata.category(ch) in _HIDDEN_CATEGORIES else ch for ch in text)
+
+
+def validate_manifest(raw: Any) -> dict[str, str]:
+    """Check a manifest against schema/tool-permissions.schema.json; return tool -> tier.
+
+    Standard-library equivalent of the JSON Schema (F9): exact top-level
+    keys, `version` the integer 1, at least one tool, each tool an object
+    with a valid `tier` and only string `description` / `rationale`.
+    """
+    if not isinstance(raw, dict):
+        raise GateError("manifest must be a JSON object")
+    if set(raw) != MANIFEST_KEYS:
+        raise GateError(f"manifest keys must be exactly {sorted(MANIFEST_KEYS)}, got {sorted(raw)}")
+    version = raw["version"]
+    if type(version) is not int or version != MANIFEST_VERSION:
+        raise GateError(f"manifest version must be {MANIFEST_VERSION}, got {version!r}")
+    tools = raw["tools"]
+    if not isinstance(tools, dict) or not tools:
+        raise GateError("manifest must declare at least one tool")
+    manifest: dict[str, str] = {}
+    for name, spec in tools.items():
+        if not isinstance(spec, dict):
+            raise GateError(f"tool {name!r} must be an object")
+        unknown = set(spec) - TOOL_KEYS
+        if unknown:
+            raise GateError(f"tool {name!r} has unknown keys {sorted(unknown)}")
+        tier = spec.get("tier")
+        if tier not in TIERS:
+            raise GateError(f"tool {name!r} declares unknown tier {tier!r}")
+        for k in ("description", "rationale"):
+            if k in spec and not isinstance(spec[k], str):
+                raise GateError(f"tool {name!r} field {k!r} must be a string")
+        manifest[name] = tier
+    return manifest
+
+
+def _check_approver(name: str) -> str:
+    if not isinstance(name, str) or not name.strip():
+        raise GateError("approver name must be a non-empty string")
+    if len(name) > MAX_APPROVER_CHARS:
+        raise GateError(f"approver name longer than {MAX_APPROVER_CHARS} characters")
+    if reviewer_safe(name) != name:
+        raise GateError("approver name contains control, invisible or bidi characters")
+    return name
+
+
+def _os_user() -> str:
+    try:
+        return getpass.getuser()
+    except Exception:  # no login name available (e.g. some containers)
+        return ""
 
 
 def _describe(exc: BaseException) -> str:
@@ -123,7 +209,15 @@ def approver_key() -> bytes | None:
 def _decision_valid(key: bytes, event: dict[str, Any], decision: str) -> bool:
     sig = event.get("signature")
     try:
-        want = sign_decision(key, str(event["request_id"]), str(event["args_sha256"]), decision, float(event["at"]))
+        want = sign_decision(
+            key,
+            str(event["request_id"]),
+            str(event["args_sha256"]),
+            decision,
+            float(event["at"]),
+            by=str(event["by"]),
+            os_user=str(event.get("os_user", "")),
+        )
     except (KeyError, TypeError, ValueError):
         return False
     return isinstance(sig, str) and hmac.compare_digest(sig, want)
@@ -292,12 +386,9 @@ class SendGate:
     ) -> SendGate:
         try:
             raw = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
-            manifest = {name: spec["tier"] for name, spec in raw["tools"].items()}
         except Exception as exc:  # missing/corrupt manifest -> deny all
             raise GateError(f"manifest unavailable or invalid: {exc}") from exc
-        for name, tier in manifest.items():
-            if tier not in TIERS:
-                raise GateError(f"tool {name!r} declares unknown tier {tier!r}")
+        manifest = validate_manifest(raw)
         store = ApprovalStore(Path(store_path))
         audit = ApprovalStore(Path(audit_path)) if audit_path else store
         return cls(manifest=manifest, executors=executors, store=store, audit=audit, approval_ttl=approval_ttl)
@@ -319,11 +410,25 @@ class SendGate:
             self._audit("executed", tool=tool, tier=tier)
             return GateResult("executed", tool, f"tier={tier}", value=value)
         # tier == send: never execute here. Record and hand back a receipt.
-        request_id = uuid.uuid4().hex[:12]
-        args_json = json.dumps(kwargs, ensure_ascii=False, sort_keys=True, default=str)
+        # Arguments must round-trip through JSON unchanged; anything else would
+        # execute as a different value than the human approved (F10).
+        try:
+            args_json = _canonical_json(kwargs)
+            exact = json.loads(args_json) == kwargs
+        except (TypeError, ValueError):
+            exact = False
+        if not exact:
+            self._audit("denied_non_json_args", tool=tool)
+            return GateResult(
+                "denied", tool, "arguments must be plain JSON values (str, number, bool, null, list, dict)"
+            )
         digest = _sha256(args_json)
         try:
-            for st in self.store.fold().values():
+            states = self.store.fold()
+            request_id = uuid.uuid4().hex
+            while request_id in states:  # F13: never reuse an id in this store
+                request_id = uuid.uuid4().hex
+            for st in states.values():
                 if st["last_event"] == "denied" and st["tool"] == tool and st["args_sha256"] == digest:
                     self._audit("denied_repeat_after_denial", tool=tool, request_id=st["request_id"])
                     return GateResult(
@@ -361,6 +466,8 @@ class SendGate:
         return self._decide(request_id, approver, "denied")
 
     def _decide(self, request_id: str, approver: str, decision: str) -> dict[str, Any]:
+        approver = _check_approver(approver)
+        os_user = _os_user()
         key = approver_key()
         if key is None:
             raise GateError(f"{KEY_ENV} is not set; only the approver side may decide")
@@ -375,9 +482,12 @@ class SendGate:
                     "type": decision,
                     "request_id": request_id,
                     "by": approver,
+                    "os_user": os_user,
                     "at": at,
                     "args_sha256": state["args_sha256"],
-                    "signature": sign_decision(key, request_id, state["args_sha256"], decision, at),
+                    "signature": sign_decision(
+                        key, request_id, state["args_sha256"], decision, at, by=approver, os_user=os_user
+                    ),
                 }
             )
         self._audit(decision, request_id=request_id, by=approver)
@@ -516,8 +626,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "list":
         try:
             for state in gate.pending():
-                shown = json.dumps(state.get("args", {}), ensure_ascii=False)
-                print(f"{state['request_id']}  {state['tool']}  args={shown}")
+                shown = reviewer_safe(json.dumps(state.get("args", {}), ensure_ascii=False))
+                print(f"{reviewer_safe(str(state['request_id']))}  {reviewer_safe(str(state['tool']))}  args={shown}")
         except GateError as exc:
             print(f"refused: {exc}", file=sys.stderr)
             return 1
