@@ -16,10 +16,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from gate import ApprovalStore, GateError, SendGate, StoreIntegrityError  # noqa: E402
 from gate.send_gate import GENESIS, main  # noqa: E402
 
-MANIFEST = {"version": 1, "tools": {
-    "mail.draft": {"tier": "draft"},
-    "mail.send": {"tier": "send"},
-}}
+MANIFEST = {
+    "version": 1,
+    "tools": {
+        "mail.draft": {"tier": "draft"},
+        "mail.send": {"tier": "send"},
+    },
+}
 KEY = "test-approver-secret"
 
 
@@ -70,6 +73,7 @@ def approved(gate, to="a@b.c", body="hello"):
 
 # -- F1 -----------------------------------------------------------------
 
+
 def test_f1_tampered_args_after_approval_do_not_execute(gate, sent_box):
     rid = approved(gate)
 
@@ -102,10 +106,12 @@ def test_f1_tampered_args_with_matching_hash_still_void(gate, sent_box):
 
 # -- F2 -----------------------------------------------------------------
 
+
 def test_f2_later_events_cannot_replace_tool_or_args(gate, sent_box):
     rid = approved(gate)
-    gate.store.append({"type": "approved", "request_id": rid, "tool": "mail.send",
-                       "args": {"to": "evil@x.y", "body": "pwned"}})
+    gate.store.append(
+        {"type": "approved", "request_id": rid, "tool": "mail.send", "args": {"to": "evil@x.y", "body": "pwned"}}
+    )
     gate.store.append({"type": "pending", "request_id": rid, "tool": "shell.exec", "args": {"cmd": "x"}})
     state = gate.store.request_state(rid)
     assert state["tool"] == "mail.send"
@@ -138,6 +144,7 @@ def test_f2_non_send_tool_in_store_is_refused(gate, sent_box):
 
 # -- F3 -----------------------------------------------------------------
 
+
 def test_f3_self_approval_without_key_is_impossible(gate, sent_box, monkeypatch):
     rid = gate.call("mail.send", to="a@b.c", body="x").request_id
     monkeypatch.delenv("SEND_GATE_APPROVER_KEY")
@@ -149,9 +156,16 @@ def test_f3_forged_approval_event_is_refused(gate, sent_box):
     res = gate.call("mail.send", to="a@b.c", body="x")
     st = gate.store.request_state(res.request_id)
     for sig in (None, "00" * 32):
-        gate.store.append({"type": "approved", "request_id": res.request_id, "by": "agent",
-                           "at": 1.0, "args_sha256": st["args_sha256"],
-                           **({"signature": sig} if sig else {})})
+        gate.store.append(
+            {
+                "type": "approved",
+                "request_id": res.request_id,
+                "by": "agent",
+                "at": 1.0,
+                "args_sha256": st["args_sha256"],
+                **({"signature": sig} if sig else {}),
+            }
+        )
     assert gate.execute_approved(res.request_id).status == "denied"
     assert sent_box == []
     assert "audit:denied_bad_signature" in [e["type"] for e in gate.store.events()]
@@ -242,12 +256,14 @@ def test_f3_replayed_approval_cannot_resurrect_sent_request(gate, sent_box):
 
 # -- F4 -----------------------------------------------------------------
 
+
 def _race(args):
     tmp, rid = args
     sent = []
 
     def slow_send(to, body):
         import time
+
         time.sleep(0.3)
         sent.append(1)
         return "sent"
@@ -268,6 +284,7 @@ def test_f4_concurrent_execution_sends_once(tmp_path, sent_box):
 
 
 # -- F5 -----------------------------------------------------------------
+
 
 def test_f5_expired_approval_is_refused(tmp_path, sent_box):
     now = [1000.0]
@@ -309,6 +326,7 @@ def test_f5_extending_approval_time_invalidates_signature(tmp_path, sent_box):
 
 
 # -- F6 -----------------------------------------------------------------
+
 
 def test_f6_identical_request_after_denial_is_refused(gate):
     first = gate.call("mail.send", to="a@b.c", body="spam")

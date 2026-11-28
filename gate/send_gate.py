@@ -123,9 +123,7 @@ def approver_key() -> bytes | None:
 def _decision_valid(key: bytes, event: dict[str, Any], decision: str) -> bool:
     sig = event.get("signature")
     try:
-        want = sign_decision(
-            key, str(event["request_id"]), str(event["args_sha256"]), decision, float(event["at"])
-        )
+        want = sign_decision(key, str(event["request_id"]), str(event["args_sha256"]), decision, float(event["at"]))
     except (KeyError, TypeError, ValueError):
         return False
     return isinstance(sig, str) and hmac.compare_digest(sig, want)
@@ -302,9 +300,7 @@ class SendGate:
                 raise GateError(f"tool {name!r} declares unknown tier {tier!r}")
         store = ApprovalStore(Path(store_path))
         audit = ApprovalStore(Path(audit_path)) if audit_path else store
-        return cls(
-            manifest=manifest, executors=executors, store=store, audit=audit, approval_ttl=approval_ttl
-        )
+        return cls(manifest=manifest, executors=executors, store=store, audit=audit, approval_ttl=approval_ttl)
 
     # -- agent side -------------------------------------------------------
 

@@ -25,6 +25,7 @@ STORE = HERE / "demo_store.jsonl"
 
 # -- fake executors: in production these call the real tools -------------
 
+
 def search(query: str) -> str:
     return f"3 messages match {query!r}: invoice #1042, invoice #1043, receipt"
 

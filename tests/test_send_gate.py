@@ -10,11 +10,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from gate import ApprovalStore, GateError, SendGate  # noqa: E402
 
-MANIFEST = {"version": 1, "tools": {
-    "mail.search": {"tier": "read"},
-    "mail.draft": {"tier": "draft"},
-    "mail.send": {"tier": "send"},
-}}
+MANIFEST = {
+    "version": 1,
+    "tools": {
+        "mail.search": {"tier": "read"},
+        "mail.draft": {"tier": "draft"},
+        "mail.send": {"tier": "send"},
+    },
+}
 
 
 @pytest.fixture()
